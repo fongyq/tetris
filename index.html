@@ -528,15 +528,6 @@
         return o;
       }
 
-      const SHAPES = BASE_SHAPES.map((base, typeIdx) => {
-        if (typeIdx === 1) {
-          return [base, base, base, base];
-        }
-        const rots = [base];
-        for (let r = 1; r < 4; r++) rots.push(rotCW(rots[r - 1]));
-        return rots;
-      });
-
       function getCells(matrix) {
         const cells = [];
         for (let y = 0; y < 4; y++) {
@@ -546,6 +537,117 @@
         }
         return cells;
       }
+
+      /**
+       * Z/S/T/J/L：取「最长边」上的中间位置为轴（水平边与垂直边比长度；平手优先水平边，再取较上/较左的边）。
+       */
+      function getPivotLongEdgeMiddleCells(cells) {
+        if (!cells.length) return { x: 0, y: 0 };
+        const hCandidates = [];
+        const byRow = {};
+        for (const c of cells) {
+          if (!byRow[c.y]) byRow[c.y] = [];
+          byRow[c.y].push(c.x);
+        }
+        for (const yStr of Object.keys(byRow)) {
+          const y = Number(yStr);
+          const xs = [...new Set(byRow[y])].sort((a, b) => a - b);
+          let i = 0;
+          while (i < xs.length) {
+            let j = i;
+            while (j + 1 < xs.length && xs[j + 1] === xs[j] + 1) j++;
+            const a = xs[i];
+            const b = xs[j];
+            const len = b - a + 1;
+            const midX = (a + b) / 2;
+            hCandidates.push({ len, kind: "h", midX, midY: y, tie: y });
+            i = j + 1;
+          }
+        }
+        const vCandidates = [];
+        const byCol = {};
+        for (const c of cells) {
+          if (!byCol[c.x]) byCol[c.x] = [];
+          byCol[c.x].push(c.y);
+        }
+        for (const xStr of Object.keys(byCol)) {
+          const x = Number(xStr);
+          const ys = [...new Set(byCol[x])].sort((a, b) => a - b);
+          let i = 0;
+          while (i < ys.length) {
+            let j = i;
+            while (j + 1 < ys.length && ys[j + 1] === ys[j] + 1) j++;
+            const a = ys[i];
+            const b = ys[j];
+            const len = b - a + 1;
+            const midY = (a + b) / 2;
+            vCandidates.push({ len, kind: "v", midX: x, midY, tie: x });
+            i = j + 1;
+          }
+        }
+        const all = hCandidates.concat(vCandidates);
+        all.sort((a, b) => {
+          if (b.len !== a.len) return b.len - a.len;
+          if (a.kind !== b.kind) return a.kind === "h" ? -1 : 1;
+          return a.tie - b.tie;
+        });
+        const best = all[0];
+        return { x: best.midX, y: best.midY };
+      }
+
+      function normalizeCells(cells) {
+        const minX = Math.min(...cells.map((c) => c.x));
+        const minY = Math.min(...cells.map((c) => c.y));
+        return cells.map((c) => ({ x: c.x - minX, y: c.y - minY }));
+      }
+
+      /** 屏幕坐标 y 向下：绕 pivot 顺时针 90° */
+      function rotateCellsCW(cells) {
+        const pivot = getPivotLongEdgeMiddleCells(cells);
+        const rotated = cells.map(({ x, y }) => {
+          const nx = pivot.x - (y - pivot.y);
+          const ny = pivot.y + (x - pivot.x);
+          return { x: Math.round(nx), y: Math.round(ny) };
+        });
+        return normalizeCells(rotated);
+      }
+
+      function cellsToMatrix4x4(cells) {
+        const m = [
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+          [0, 0, 0, 0],
+        ];
+        for (const c of cells) {
+          if (c.x >= 0 && c.x < 4 && c.y >= 0 && c.y < 4) m[c.y][c.x] = 1;
+        }
+        return m;
+      }
+
+      const SHAPES = (function buildShapes() {
+        const out = [];
+        for (let type = 0; type < 7; type++) {
+          if (type === 0) {
+            const base = BASE_SHAPES[0];
+            const rots = [base];
+            for (let r = 1; r < 4; r++) rots.push(rotCW(rots[r - 1]));
+            out[type] = rots;
+          } else if (type === 1) {
+            const base = BASE_SHAPES[1];
+            out[type] = [base, base, base, base];
+          } else {
+            let cells = getCells(BASE_SHAPES[type]);
+            const rots = [];
+            for (let r = 0; r < 4; r++) {
+              rots.push(cellsToMatrix4x4(cells));
+              if (r < 3) cells = rotateCellsCW(cells);
+            }
+            out[type] = rots;
+          }
+        }
+        return out;
+      })();
 
       let audioCtx = null;
       function getAudioContext() {
@@ -637,6 +739,7 @@
       let board = [];
       let current = null;
       let nextType = 0;
+      let nextRot = 0;
       let score = 0;
       let playing = false;
       let paused = true;
@@ -701,6 +804,7 @@
         board = emptyBoard();
         current = null;
         nextType = randomPieceType();
+        nextRot = Math.floor(Math.random() * 4);
         score = 0;
         gameOver = false;
         clearPhase = "idle";
@@ -724,8 +828,10 @@
 
       function spawnPiece() {
         const type = nextType;
+        const rot = nextRot;
         nextType = randomPieceType();
-        const shape = SHAPES[type][0];
+        nextRot = Math.floor(Math.random() * 4);
+        const shape = SHAPES[type][rot % 4];
         const cells = getCells(shape);
         let minX = 4;
         let maxX = 0;
@@ -736,8 +842,8 @@
         const w = maxX - minX + 1;
         const startX = Math.floor((COLS - w) / 2) - minX;
         const startY = 0;
-        const cx0 = centerXOfBBox(type, 0);
-        current = { type, rot: 0, x: startX, y: startY, worldCx: startX + cx0 };
+        const cx0 = centerXForPiece(type, rot);
+        current = { type, rot, x: startX, y: startY, worldCx: startX + cx0 };
         if (collides(current.x, current.y, current.rot)) {
           gameOver = true;
           playing = false;
@@ -762,6 +868,12 @@
         }
         if (minX === Infinity) return 0;
         return (minX + maxX) / 2;
+      }
+
+      /** I/O：包围盒中心；Z/S/T/J/L：长边中点（与旋转轴一致） */
+      function centerXForPiece(type, rot) {
+        if (type === 0 || type === 1) return centerXOfBBox(type, rot);
+        return getPivotLongEdgeMiddleCells(getCells(SHAPES[type][rot % 4])).x;
       }
 
       function collidesAt(px, py, type, rot) {
@@ -806,7 +918,7 @@
         const t = current.type;
         const nextR = (current.rot + 1) % 4;
         const wc = current.worldCx;
-        const newCx = centerXOfBBox(t, nextR);
+        const newCx = centerXForPiece(t, nextR);
         const baseX = Math.round(wc - newCx);
         const kicks = [0, -1, 1, -2, 2];
         for (let i = 0; i < kicks.length; i++) {
@@ -987,7 +1099,7 @@
         ctx.lineWidth = 1;
         ctx.fillRect(bx, by, boxW, boxH);
         ctx.strokeRect(bx + 0.5, by + 0.5, boxW - 1, boxH - 1);
-        const m = SHAPES[nextType][0];
+        const m = SHAPES[nextType][nextRot % 4];
         for (let y = 0; y < 4; y++) {
           for (let x = 0; x < 4; x++) {
             if (!m[y][x]) continue;
@@ -1115,6 +1227,7 @@
         clearPhase = "idle";
         current = null;
         nextType = randomPieceType();
+        nextRot = Math.floor(Math.random() * 4);
         playing = true;
         paused = false;
         softDropHeld = false;
